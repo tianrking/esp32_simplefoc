@@ -1,0 +1,122 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+// I2C配置
+#define I2C_SDA 23
+#define I2C_SCL 5
+
+// 创建MPU6050对象
+Adafruit_MPU6050 mpu;
+
+// 用于计算倾斜角度的函数
+float calculatePitchAngle(float ax, float ay, float az) {
+    return atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
+}
+
+float calculateRollAngle(float ax, float ay, float az) {
+    return atan2(-ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+}
+
+void setup() {
+    // 初始化串口通信
+    Serial.begin(115200);
+    while(!Serial) delay(10);  // 等待串口连接
+
+    // 初始化I2C总线
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(400000);  // 设置I2C时钟为400kHz
+
+    Serial.println("MPU6050 综合诊断程序");
+
+    // 尝试初始化MPU6050
+    if (!mpu.begin()) {
+        Serial.println("无法找到MPU6050芯片！请检查以下内容：");
+        Serial.println("1. 检查I2C接线是否正确");
+        Serial.println("2. 检查传感器供电");
+        Serial.println("3. 检查I2C地址是否冲突");
+        while (1) {
+            delay(10);
+        }
+    }
+
+    // 配置传感器
+    Serial.println("MPU6050初始化成功！");
+    
+    // 设置加速度计量程
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    Serial.println("加速度计量程设置为 ±8G");
+    
+    // 设置陀螺仪量程
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    Serial.println("陀螺仪量程设置为 ±500度/秒");
+    
+    // 设置数字低通滤波器
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    Serial.println("数字低通滤波器带宽设置为21Hz");
+
+    // 短暂延迟，确保所有设置生效
+    delay(100);
+}
+
+void loop() {
+    // 创建传感器事件对象
+    sensors_event_t a, g, temp;
+    
+    // 读取传感器数据
+    mpu.getEvent(&a, &g, &temp);
+
+    // 打印详细传感器信息
+    Serial.println("\n===== MPU6050 实时数据 =====");
+    
+    // 加速度计数据
+    Serial.println("加速度计 (m/s²):");
+    Serial.printf("  X: %6.2f  Y: %6.2f  Z: %6.2f\n", 
+        a.acceleration.x, 
+        a.acceleration.y, 
+        a.acceleration.z);
+    
+    // 陀螺仪数据
+    Serial.println("陀螺仪 (度/秒):");
+    Serial.printf("  X: %6.2f  Y: %6.2f  Z: %6.2f\n", 
+        g.gyro.x * 180.0/PI, 
+        g.gyro.y * 180.0/PI, 
+        g.gyro.z * 180.0/PI);
+    
+    // 温度
+    Serial.printf("温度: %.2f °C\n", temp.temperature);
+    
+    // 计算倾斜角度
+    float pitchAngle = calculatePitchAngle(
+        a.acceleration.x, 
+        a.acceleration.y, 
+        a.acceleration.z
+    );
+    
+    float rollAngle = calculateRollAngle(
+        a.acceleration.x, 
+        a.acceleration.y, 
+        a.acceleration.z
+    );
+    
+    Serial.println("姿态角度:");
+    Serial.printf("  俯仰角 (Pitch): %6.2f 度\n", pitchAngle);
+    Serial.printf("  横滚角 (Roll): %6.2f 度\n", rollAngle);
+
+    // 打印原始加速度和陀螺仪数据
+    Serial.println("\n原始传感器数据:");
+    sensors_vec_t rawAccel = a.acceleration;
+    sensors_vec_t rawGyro = g.gyro;
+    
+    Serial.printf("原始加速度计：X=%d, Y=%d, Z=%d\n", 
+        (int)rawAccel.x, (int)rawAccel.y, (int)rawAccel.z);
+    Serial.printf("原始陀螺仪：X=%d, Y=%d, Z=%d\n", 
+        (int)rawGyro.x, (int)rawGyro.y, (int)rawGyro.z);
+
+    // 分隔线
+    Serial.println("===============================");
+
+    // 延迟100ms，控制打印频率
+    delay(100);
+}

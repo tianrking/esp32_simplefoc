@@ -1,21 +1,11 @@
 #include <Arduino.h>
 #include <SimpleFOC.h>
-#include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include <MPU6050_tockn.h>
 
-// I2C定义
-#define I2C_SDA_ENCODER 19
-#define I2C_SCL_ENCODER 18
-#define I2C_SDA_MPU 23
-#define I2C_SCL_MPU 5
-
-// I2C对象
-TwoWire I2C_Encoder = TwoWire(0);
-TwoWire I2C_MPU = TwoWire(1);
-
-// IMU对象
-Adafruit_MPU6050 mpu;
+// I2C和IMU配置
+TwoWire I2Cone = TwoWire(0);
+TwoWire I2Ctwo = TwoWire(1);
+MPU6050 mpu6050(I2Ctwo);
 
 // 编码器定义
 MagneticSensorI2C sensor0 = MagneticSensorI2C(AS5600_I2C);
@@ -28,67 +18,54 @@ BLDCDriver3PWM driver0 = BLDCDriver3PWM(32, 33, 25, 22);
 BLDCDriver3PWM driver1 = BLDCDriver3PWM(26, 27, 14, 12);
 
 // 调试参数
-bool debug_mode = true;
-bool calibration_mode = true;
+bool debug_mode = true;  // 用于控制调试信息输出
+bool calibration_mode = true;  // 用于校准模式
 
-// PID控制器定义
+// 控制器定义
+// 调整PID参数以获得更稳定的控制
+// 姿态控制PID
 PIDController pid_stb = PIDController(
-    0.5,    // P增益
-    0.01,   // I增益
-    0.01,   // D增益
+    0.5,    // P增益 (可能需要调整)
+    0.01,   // I增益 (小增益有助于减少静态误差)
+    0.01,   // D增益 (阻尼)
     100000.0,  // 斜坡速率 
-    10.0    // 输出限制
+    10.0    // 输出限制 (更宽松的限制)
 );
 
+// 速度控制PID
 PIDController pid_vel = PIDController(
     0.5,    // P增益 
     0.0,    // I增益
     0.01,   // D增益
     10000.0,  // 斜坡速率
-    _PI/8   // 更小的角度限制
+    _PI/8   // 更小的角度限制 (减缓旋转)
 );
 
-// 低通滤波器
-LowPassFilter lpf_pitch_cmd = LowPassFilter(0.05);
-LowPassFilter lpf_throttle = LowPassFilter(0.3);
-LowPassFilter lpf_steering = LowPassFilter(0.05);
+// 低通滤波器 - 减少噪声和快速变化
+LowPassFilter lpf_pitch_cmd = LowPassFilter(0.05);  // 更慢的响应
+LowPassFilter lpf_throttle = LowPassFilter(0.3);   // 更平滑的油门
+LowPassFilter lpf_steering = LowPassFilter(0.05);  // 更慢的转向响应
 
 // 控制参数
 float steering = 0;
 float throttle = 0;
-float max_throttle = 40;
-float max_steering = 0.5;
-float Offset_parameters = 0;
+float max_throttle = 40;  // 降低最大油门
+float max_steering = 0.5; // 降低最大转向
+float Offset_parameters = 0;  // 可能需要调整平衡点
 
-// 计算pitch角度的函数（使用加速度计）
-float calculatePitchAngle(float ax, float ay, float az) {
-    return atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
-}
-
-// 获取陀螺仪Y轴角速度
-float getGyroYRate(sensors_event_t& g) {
-    return g.gyro.y * 180.0 / PI;
-}
-
-// 校准函数
+// 校准函数 - 帮助找到精确的平衡点
 void calibrate_balance_point() {
     if (!calibration_mode) return;
 
     Serial.println("开始平衡点校准...");
     
+    // 采样多次pitch角度
     float total_pitch = 0;
     int sample_count = 200;
     
     for (int i = 0; i < sample_count; i++) {
-        sensors_event_t a, g, temp;
-        mpu.getEvent(&a, &g, &temp);
-        
-        // 使用加速度计计算pitch角度
-        total_pitch += calculatePitchAngle(
-            a.acceleration.x, 
-            a.acceleration.y, 
-            a.acceleration.z
-        );
+        mpu6050.update();
+        total_pitch += mpu6050.getAngleY();
         delay(10);
     }
     
@@ -108,15 +85,13 @@ void I2C_init() {
     pinMode(27, INPUT_PULLUP);
     pinMode(14, INPUT_PULLUP);
 
-    // 初始化编码器I2C
-    I2C_Encoder.begin(I2C_SDA_ENCODER, I2C_SCL_ENCODER, 400000UL);
-    
-    // 初始化MPU的I2C
-    I2C_MPU.begin(I2C_SDA_MPU, I2C_SCL_MPU, 400000UL);
+    // I2C初始化
+    I2Cone.begin(19, 18, 400000UL);
+    I2Ctwo.begin(23, 5, 400000UL);
 
     // 编码器初始化
-    sensor0.init(&I2C_Encoder);
-    sensor1.init(&I2C_Encoder);
+    sensor0.init(&I2Cone);
+    sensor1.init(&I2Ctwo);
 }
 
 void setup() {
@@ -128,19 +103,8 @@ void setup() {
 
     // 初始化IMU
     Serial.println("初始化 MPU6050...");
-    
-    // 使用指定的I2C总线初始化
-    Wire = I2C_MPU;  // 关键修改：使用MPU的I2C总线
-    
-    if (!mpu.begin()) {
-        Serial.println("无法找到MPU6050芯片！");
-        while (1) delay(10);
-    }
-
-    // 配置MPU6050
-    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    mpu6050.begin();
+    mpu6050.calcGyroOffsets(true);
 
     // 校准平衡点
     calibrate_balance_point();
@@ -179,17 +143,10 @@ void loop() {
     motor0.move();
     motor1.move();
 
-    // 读取IMU数据
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
-
-    // 计算pitch角度和角速度
-    double mpu_pitch = calculatePitchAngle(
-        a.acceleration.x, 
-        a.acceleration.y, 
-        a.acceleration.z
-    );
-    double gyro_y = getGyroYRate(g);
+    // 更新IMU数据
+    mpu6050.update();
+    double mpu_pitch = mpu6050.getAngleY();
+    double gyro_y = mpu6050.getGyroY();
 
     // 速度环
     float avg_velocity = (motor0.shaft_velocity + motor1.shaft_velocity) / 2;
